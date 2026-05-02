@@ -131,24 +131,39 @@ async def stream_job(session_id: str, request: Request):
     settings = get_settings()
 
     async def event_source():
-        # Phase 1: REPLAY. Read everything that's already happened. The list is
-        # capped by TTL but otherwise complete — clients reconnecting mid-task
-        # see the full history before the live tail starts.
-        replayed_seqs: set[int] = set()
-        backlog_raw: list[bytes | str] = await redis.lrange(keys.events_list(session_id), 0, -1)
-        for raw in backlog_raw:
-            event = EVENT_ADAPTER.validate_json(raw)
-            replayed_seqs.add(event.seq)
-            yield {"event": event.type.value, "data": event.model_dump_json()}
-            if event.type in TERMINAL_TYPES:
-                return
-
-        # Phase 2: TAIL. Subscribe and forward, deduping anything already replayed.
+        # Order matters: SUBSCRIBE first, LRANGE second.
+        #
+        # If we LRANGE first then SUBSCRIBE, events published in the gap
+        # between the two operations are *lost* — Redis Pub/Sub has no replay,
+        # and the events are gone from the channel before we ever attached.
+        # By subscribing first, redis-py starts buffering messages on the
+        # connection. We then read the durable history with LRANGE; any event
+        # that appears in BOTH the list and the buffered channel feed is
+        # caught by the dedupe set below. Result: nothing is lost, nothing is
+        # duplicated, regardless of how the producer's RPUSH/PUBLISH calls
+        # interleave with our subscribe and read.
         pubsub = redis.pubsub()
         await pubsub.subscribe(keys.channel(session_id))
         loop = asyncio.get_event_loop()
         heartbeat_at = loop.time() + settings.sse_heartbeat_seconds
         try:
+            # Phase 1: REPLAY everything that's already happened. The list is
+            # capped by TTL but otherwise complete — clients reconnecting
+            # mid-task see the full history before the live tail starts.
+            replayed_seqs: set[int] = set()
+            backlog_raw: list[bytes | str] = await redis.lrange(
+                keys.events_list(session_id), 0, -1
+            )
+            for raw in backlog_raw:
+                event = EVENT_ADAPTER.validate_json(raw)
+                replayed_seqs.add(event.seq)
+                yield {"event": event.type.value, "data": event.model_dump_json()}
+                if event.type in TERMINAL_TYPES:
+                    return
+
+            # Phase 2: TAIL — drain the buffered messages + live ones. Dedupe
+            # by seq for events that landed in both the list (from LRANGE)
+            # and the channel buffer (between SUBSCRIBE and LRANGE).
             while True:
                 if await request.is_disconnected():
                     # Client gave up — set the cancel flag so the worker exits at the

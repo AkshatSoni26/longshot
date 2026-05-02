@@ -152,6 +152,34 @@ def test_event_seq_default_and_model_copy() -> None:
     assert type(bumped) is StartedEvent  # round-trip preserves the subclass
 
 
+def test_sse_handler_subscribes_before_lrange() -> None:
+    """Regression test for a real subtle bug.
+
+    The SSE handler must SUBSCRIBE to the Pub/Sub channel *before* doing the
+    LRANGE that reads history. If we LRANGE first then SUBSCRIBE, events
+    published in the gap are lost — Pub/Sub has no replay, so a message
+    arriving between the two operations vanishes before we attach.
+
+    This test catches a future regression that swaps the order back. It's a
+    textual check (no Redis required) — fine for a smoke test; the behavioral
+    proof is in the inline comment of ``app/api.py`` itself.
+    """
+    import inspect
+
+    from app.api import stream_job
+
+    src = inspect.getsource(stream_job)
+    sub_pos = src.find("pubsub.subscribe(")
+    lrange_pos = src.find("redis.lrange(")
+    assert sub_pos > -1, "pubsub.subscribe(...) call not found in stream_job"
+    assert lrange_pos > -1, "redis.lrange(...) call not found in stream_job"
+    assert sub_pos < lrange_pos, (
+        "pubsub.subscribe must appear BEFORE redis.lrange in the SSE handler. "
+        "LRANGE-first leaves a race window where events published between "
+        "LRANGE and SUBSCRIBE are lost (Pub/Sub has no replay)."
+    )
+
+
 def test_drainer_stop_sentinel_is_typed() -> None:
     """The stop sentinel is its own class — not ``object()`` — so the drainer
     queue can be typed strictly."""
