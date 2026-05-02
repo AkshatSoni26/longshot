@@ -9,8 +9,9 @@
 This is a sanitized, dependency-light extraction of an architecture I built in
 production for a long-running AI-orchestration system. The patterns —
 per-session ordered drainers, at-least-once delivery with an idempotency
-lock, replay-then-tail SSE — are battle-tested at $job. This repo is the
-public version: small enough to read end-to-end in one sitting.
+lock, replay-then-tail SSE — were adapted from a production architecture
+I built and shipped at work. This repo is the public, dependency-light
+version: small enough to read end-to-end in one sitting.
 
 It is intentionally one task type, no auth, no DB beyond Redis, no fan-out.
 The goal is to explain the reliability patterns clearly enough that another
@@ -20,7 +21,7 @@ engineer can read, run, and adapt them — not to be a framework.
    client                       ┌──────────┐                        worker
   ───────►  POST /jobs   ───►   │  api.py  │                       ──────────
                                 └────┬─────┘                       app.tasks
-                                     │  .kiq()                      summarize_url
+                                     │  .kiq()                      run_job
                                      ▼                                  ▲
                               ┌─────────────┐         XREADGROUP        │
                               │   Redis     │ ◄─────────────────────────┘
@@ -61,8 +62,12 @@ also a trap — you trade one problem (long handler) for five smaller ones:
   channel keep state? (Pub/Sub didn't.)
 - **Cancellation.** The user closed the tab. Your worker is still going.
 
-This repo's job is to demonstrate one *complete* solution to all five at once,
-in code small enough to read end-to-end in a sitting.
+This repo demonstrates a compact solution to the core reliability problems
+this raises: durable dispatch, duplicate protection, replayable progress,
+cancellation, and typed failure visibility — in code small enough to read
+end-to-end in a sitting. Where the demo intentionally stops short of a full
+production answer (e.g., resumable-from-checkpoint workers), it says so
+explicitly in *What this is NOT* below.
 
 ## Run it in 60 seconds
 
@@ -125,20 +130,21 @@ Use `make dev-rebuild` after changing dependencies in `pyproject.toml`.
 The whole point: **the API never *invokes* pipeline code — it only sends
 messages.** The boundary lives in the broker, not in the import graph.
 
-The API does import `summarize_url` from `app/tasks.py`, but the
+The API does import `run_job` from `app/tasks.py`, but the
 `@broker.task` decorator turns it into a typed *kicker*: calling
-`summarize_url.kiq(...)` serializes a message and pushes it to Redis. The
+`run_job.kiq(...)` serializes a message and pushes it to Redis. The
 function body never runs in the API process. Replace `app.tasks` with a stub
 re-exporting the same kickers (or move the worker to a separate repo
 entirely) and zero API code changes.
 
-The single source of truth is the typed task signature in `app/tasks.py:57`:
+The single source of truth is the typed task signature in `app/tasks.py`:
 
 ```python
-@broker.task(task_name="summarize_url")
-async def summarize_url(
+@broker.task(task_name="run_job")
+async def run_job(
     session_id: str,
-    url: str,
+    input: str,                          # URL or chat prompt
+    mode: JobMode,                       # auto-detected on the API side
     chunk_size_chars: int,
     max_chunks: int,
     redis: Redis = TaskiqDepends(redis_dependency),
@@ -148,7 +154,7 @@ async def summarize_url(
 The return type is a `TaskResult` Pydantic model (see `app/contract.py`) and
 the broker uses a `PydanticJSONSerializer` so models flow through the wire
 without ad-hoc `model_dump()` calls. There are no `Any`-typed dicts crossing
-the boundary in either direction. The API calls `summarize_url.kiq(...)` —
+the boundary in either direction. The API calls `run_job.kiq(...)` —
 that proxies through the broker as a JSON-serialized message. The function
 body never runs in the API process.
 
@@ -165,10 +171,14 @@ sibling worker after `idle_timeout`.
 
 `RedisAsyncResultBackend` stores task return values with a tight TTL — those
 values are debug-only; "real" state lives in the application database (or in
-this case, in the events list). The `SmartRetryMiddleware` retries with
-exponential backoff and jitter, capped at one retry. The *idempotency lock*
-(pattern 5) is what really protects against duplicate work; retries are a
-narrow tool for transient errors.
+this case, in the events list). The broker is configured with
+`SmartRetryMiddleware` (exponential backoff + jitter, cap of one retry) for
+*unexpected* exceptions. Expected pipeline failures — `FetchError`,
+`SummarizeError`, `TaskCancelled` — are caught inside the task body and
+converted into typed `ErrorEvent`/`CancelledEvent` SSE events plus a
+terminal `TaskResult`, so they never trip the retry path. The *idempotency
+lock* (pattern 5) is what really protects against duplicate work when
+retries do fire.
 
 ### 2. Typed events end-to-end (no `Any`, no untyped dicts)
 
@@ -207,9 +217,10 @@ Two coroutines emitting concurrently can race past the `INCR`. The client sees
 seq=2 arrive before seq=1.
 
 The fix: a per-session `asyncio.Queue` plus exactly one drainer task. Producers
-enqueue typed event-builder *closures*; the drainer pops FIFO, fetches the
-next `seq`, builds the typed event, and pipelines four writes (INCR, RPUSH,
-SETEX, PUBLISH) atomically. Strictly monotonic seqs by construction — no
+enqueue typed `BaseEvent` instances with `seq=0` placeholder; the drainer
+pops FIFO, fetches the next `seq` via `INCR`, `model_copy`s the event with
+the real seq, and pipelines four writes (RPUSH, EXPIRE, SET, PUBLISH) in a
+single round-trip. Strictly monotonic seqs by construction — no
 distributed lock, no Lua script. This is the most worth-reading file in the
 repo.
 
@@ -249,7 +260,7 @@ Every entry below has a code path *and* a way for the client to observe it.
 |---|---|---|
 | Worker not running at dispatch | `app/api.py:90` (heartbeat check) | HTTP 503 with retry hint |
 | Broker unreachable on `.kiq()` | `app/api.py:106` (try/except) | HTTP 503 |
-| Worker crash mid-task | Stream redelivery + `app/tasks.py:65` (lock) | Resumes once, no dupes |
+| Worker crash mid-task | Stream redelivery + `app/tasks.py:65` (lock) | No duplicate execution; checkpointed resume is out of scope (see *What this is NOT*) |
 | Task raises | `app/tasks.py:106` emits `ErrorEvent` | SSE `error` event then close |
 | Task hangs forever | `app/tasks.py:80` `asyncio.wait_for` | SSE `error` event with `reason=timeout` |
 | LLM unreachable / errors | `app/pipeline.py` raises `SummarizeError` → `ErrorEvent` | SSE `error` event with `reason=summarize` |
@@ -301,7 +312,7 @@ The things-people-get-wrong list is short and worth printing on a poster.
 
 - **Putting business logic in the API handler "just for now".** The decoupling
   is the entire reason this repo exists. The `app/api.py` file is allowed to
-  import `summarize_url` *only* because TaskIQ's decorator turns it into a
+  import `run_job` *only* because TaskIQ's decorator turns it into a
   message-sending proxy. Look at it again with that lens.
 - **Using Pub/Sub alone.** No replay. Reconnect = lost state.
 - **Using a list alone.** No live push. Clients have to poll.
