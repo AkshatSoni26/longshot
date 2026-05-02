@@ -7,7 +7,7 @@ URL="${1:-https://en.wikipedia.org/wiki/Cryptography}"
 
 RESPONSE=$(curl -fsS -X POST "$API/jobs" \
   -H "content-type: application/json" \
-  -d "{\"url\": \"$URL\", \"max_chunks\": 30, \"chunk_size_chars\": 800}")
+  -d "{\"input\": \"$URL\", \"max_chunks\": 30, \"chunk_size_chars\": 800}")
 SESSION_ID=$(echo "$RESPONSE" | jq -r .session_id)
 echo "session_id=$SESSION_ID"
 

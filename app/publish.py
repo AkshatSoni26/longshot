@@ -19,7 +19,9 @@ arrive before seq=1.
 Fix: per-session ``asyncio.Queue`` + single drainer task. Producers enqueue
 typed ``BaseEvent`` instances (with ``seq`` left at its default ``0``); the
 drainer pops FIFO, ``model_copy``s in the real sequence, and pipelines the
-four writes atomically.
+four writes in a single round-trip. (The pipeline uses ``transaction=False``
+— it's a round-trip optimization, not Redis-side atomicity. Ordering across
+events is enforced by the single-consumer property of the loop.)
 """
 
 from __future__ import annotations

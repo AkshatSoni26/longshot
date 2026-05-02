@@ -278,7 +278,7 @@ Every entry below has a code path *and* a way for the client to observe it.
 
 ## Failure demos
 
-### Worker crash → resumption
+### Worker crash → duplicate suppression
 
 ```bash
 make up
@@ -286,11 +286,12 @@ bash demo/chaos.sh
 ```
 
 The script posts a job, kills the worker container three seconds in, restarts
-it after five seconds. Because of the idempotency lock + Stream redelivery,
-the task picks up exactly once. (Note: in this v1, "resumption" means the
-redelivered worker observes the lock, exits silently, and the client times
-out their SSE — *no double work*. A real-resumption-from-checkpoint variant
-is in `FUTURE.md`.)
+it after five seconds. The redelivered message reaches the new worker, which
+calls `SET NX EX` on the idempotency lock, sees it's still held by the
+crashed task, and exits with `TaskStatus.DUPLICATE_DELIVERY` — **no duplicate
+execution.** Important: this is not resumption. The original task body never
+finishes; the SSE client eventually times out. True
+resumption-from-checkpoint is a state-machine rewrite, listed in `FUTURE.md`.
 
 ### User cancels mid-stream
 

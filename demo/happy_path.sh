@@ -19,7 +19,7 @@ fi
 echo ">>> POST $API/jobs"
 RESPONSE=$(curl -fsS -X POST "$API/jobs" \
   -H "content-type: application/json" \
-  -d "{\"url\": \"$URL\", \"chunk_size_chars\": $CHUNK_SIZE_CHARS, \"max_chunks\": $MAX_CHUNKS}")
+  -d "{\"input\": \"$URL\", \"chunk_size_chars\": $CHUNK_SIZE_CHARS, \"max_chunks\": $MAX_CHUNKS}")
 echo "$RESPONSE" | jq
 
 SESSION_ID=$(echo "$RESPONSE" | jq -r .session_id)
