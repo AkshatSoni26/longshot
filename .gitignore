@@ -23,3 +23,6 @@ htmlcov/
 .DS_Store
 Thumbs.db
 .claude/
+
+# Blog drafts kept locally — published on dev.to / personal blog instead.
+docs/blog-*.md

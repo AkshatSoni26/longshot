@@ -1,8 +1,20 @@
 # longshot
 
 > A small, runnable demonstration of how to decouple long-running work from a
-> FastAPI request handler using **TaskIQ + Redis Streams + SSE**, with every
-> failure mode that matters in production handled (and demonstrated).
+> FastAPI request handler using **TaskIQ + Redis Streams + SSE**, with the
+> failure modes that matter in production demonstrated end-to-end.
+
+## Why this repo exists
+
+This is a sanitized, dependency-light extraction of an architecture I built in
+production for a long-running AI-orchestration system. The patterns —
+per-session ordered drainers, at-least-once delivery with an idempotency
+lock, replay-then-tail SSE — are battle-tested at $job. This repo is the
+public version: small enough to read end-to-end in one sitting.
+
+It is intentionally one task type, no auth, no DB beyond Redis, no fan-out.
+The goal is to explain the reliability patterns clearly enough that another
+engineer can read, run, and adapt them — not to be a framework.
 
 ```
    client                       ┌──────────┐                        worker
