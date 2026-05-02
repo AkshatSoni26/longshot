@@ -270,7 +270,8 @@ Every entry below has a code path *and* a way for the client to observe it.
 | Worker not running at dispatch | `app/api.py:90` (heartbeat check) | HTTP 503 with retry hint |
 | Broker unreachable on `.kiq()` | `app/api.py:106` (try/except) | HTTP 503 |
 | Worker crash mid-task | Redis Streams pending-message claim (`XAUTOCLAIM` after `idle_timeout`) + `app/tasks.py:65` (lock) | No duplicate execution; checkpointed resume is out of scope (see *What this is NOT*) |
-| Task raises | `app/tasks.py:106` emits `ErrorEvent` | SSE `error` event then close |
+| Known pipeline error (`FetchError`/`SummarizeError`) | Inner pipeline emits `ErrorEvent`; `run_job` catches and returns `TaskResult(status=ERROR)` — no broker retry | SSE `error` event then close |
+| Unknown task exception | `app/tasks.py:106` emits `ErrorEvent`, then re-raises (retry middleware may redeliver — lock catches the dupe) | SSE `error` event then close |
 | Task hangs forever | `app/tasks.py:80` `asyncio.wait_for` | SSE `error` event with `reason=timeout` |
 | LLM unreachable / errors | `app/pipeline.py` raises `SummarizeError` → `ErrorEvent` | SSE `error` event with `reason=summarize` |
 | Client disconnects | SSE generator just exits — worker keeps running | Reconnect to same `session_id` replays full history |
