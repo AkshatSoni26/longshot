@@ -6,7 +6,7 @@ The handler does three things and three things only:
   * dispatches via TaskIQ and returns immediately with a typed response
 
 It must NOT execute pipeline code. The decoupling is the whole point. The
-import of ``summarize_url`` only gives us a typed *kicker* — calling
+import of ``run_job`` only gives us a typed *kicker* — calling
 ``.kiq(...)`` serializes a message to Redis; the function body never runs in
 the API process.
 """

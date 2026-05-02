@@ -273,7 +273,7 @@ Every entry below has a code path *and* a way for the client to observe it.
 | Task raises | `app/tasks.py:106` emits `ErrorEvent` | SSE `error` event then close |
 | Task hangs forever | `app/tasks.py:80` `asyncio.wait_for` | SSE `error` event with `reason=timeout` |
 | LLM unreachable / errors | `app/pipeline.py` raises `SummarizeError` → `ErrorEvent` | SSE `error` event with `reason=summarize` |
-| Client disconnects | `app/api.py:143` sets cancel flag | Worker exits at next checkpoint |
+| Client disconnects | SSE generator just exits — worker keeps running | Reconnect to same `session_id` replays full history |
 | User-initiated cancel | `DELETE /jobs/{id}` → cancel flag | SSE `cancelled` event |
 
 ## Failure demos
