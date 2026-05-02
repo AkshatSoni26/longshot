@@ -4,6 +4,8 @@
 > FastAPI request handler using **TaskIQ + Redis Streams + SSE**, with the
 > failure modes that matter in production demonstrated end-to-end.
 
+📖 **Companion blog post:** [5-Minute AI Jobs and Closed Tabs — Why We Built Replay-Then-Tail SSE](https://dev.to/akshatsoni26/5-minute-ai-jobs-and-closed-tabs-why-we-built-replay-then-tail-sse-2fn1)
+
 ## Why this repo exists
 
 This is a sanitized, dependency-light extraction of an architecture I built in
@@ -16,6 +18,12 @@ version: small enough to read end-to-end in one sitting.
 It is intentionally one task type, no auth, no DB beyond Redis, no fan-out.
 The goal is to explain the reliability patterns clearly enough that another
 engineer can read, run, and adapt them — not to be a framework.
+
+> **See also:** the [blog post](https://dev.to/akshatsoni26/5-minute-ai-jobs-and-closed-tabs-why-we-built-replay-then-tail-sse-2fn1)
+> walks through the *why* — the disconnect failure mode that motivated the
+> design, the three wrong fixes for the seq-ordering race, and the drainer
+> pattern that solves it. This README is for *running* the demo; the blog is
+> for *understanding* it.
 
 ```
    client                       ┌──────────┐                        worker
