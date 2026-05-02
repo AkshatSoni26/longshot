@@ -224,17 +224,23 @@ single round-trip. Strictly monotonic seqs by construction — no
 distributed lock, no Lua script. This is the most worth-reading file in the
 repo.
 
-### 4. SSE that survives reconnects: replay then tail
+### 4. SSE that survives reconnects: subscribe, replay, then tail
 
 **File:** `app/api.py:113`
 
-The SSE endpoint reads `task_events:{id}` from start (everything that already
-happened), then subscribes to `task_channel:{id}` (live tail), deduping by
-`seq` so the client sees a clean monotonic stream even if it reconnects mid-
-task. A keepalive every 30s lets the client distinguish "quiet" from "dead".
-Every byte coming back through the SSE boundary is parsed by the discriminated-
-union `TypeAdapter`, so a malformed event is rejected instead of silently
-forwarded.
+Order matters here. The SSE endpoint **subscribes to `task_channel:{id}`
+first** (so the connection starts holding inbound messages for us), **then**
+reads `task_events:{id}` from start (the durable history), **then** drains
+the live tail — deduping by `seq` for events that landed in both the list
+and the channel buffer. If you reverse the order (LRANGE first, SUBSCRIBE
+second), there's a race window where events published in between are *lost
+forever* — Pub/Sub has no replay, and the message is dropped because nobody
+was listening yet. A keepalive every 30s lets the client distinguish "quiet"
+from "dead". Every byte coming back through the SSE boundary is parsed by
+the discriminated-union `TypeAdapter`, so a malformed event is rejected
+instead of silently forwarded. Disconnecting the SSE client does **not**
+cancel the worker — the work outlives the connection; reconnect to the same
+session_id to resume tailing. Explicit cancel is `DELETE /jobs/{id}`.
 
 ### 5. Idempotency lock as the first line in the task
 
@@ -246,11 +252,14 @@ if not got_lock:
     return TaskResult(status=TaskStatus.DUPLICATE_DELIVERY, session_id=session_id)
 ```
 
-Redis Streams will redeliver if a worker dies before ACK. The retry
-middleware will redeliver on transient errors. The `SET NX EX` is what makes
-both safe: only the first delivery actually does work; subsequent ones are
-silent no-ops. This is what allows us to use at-least-once delivery without
-making the business logic itself care about it.
+Redis Streams don't redeliver by themselves — the broker periodically
+calls `XAUTOCLAIM` to reclaim pending entries that have been held longer
+than `idle_timeout`. TaskIQ does this for us. The retry middleware adds
+another layer of redelivery on top, for transient errors caught after the
+task body started. The `SET NX EX` lock is what makes both safe: only the
+first delivery actually does work; subsequent ones observe the lock and
+exit silently. This is what allows us to use at-least-once delivery
+without making the business logic itself care about it.
 
 ### 6. Failure handling matrix
 
@@ -260,7 +269,7 @@ Every entry below has a code path *and* a way for the client to observe it.
 |---|---|---|
 | Worker not running at dispatch | `app/api.py:90` (heartbeat check) | HTTP 503 with retry hint |
 | Broker unreachable on `.kiq()` | `app/api.py:106` (try/except) | HTTP 503 |
-| Worker crash mid-task | Stream redelivery + `app/tasks.py:65` (lock) | No duplicate execution; checkpointed resume is out of scope (see *What this is NOT*) |
+| Worker crash mid-task | Redis Streams pending-message claim (`XAUTOCLAIM` after `idle_timeout`) + `app/tasks.py:65` (lock) | No duplicate execution; checkpointed resume is out of scope (see *What this is NOT*) |
 | Task raises | `app/tasks.py:106` emits `ErrorEvent` | SSE `error` event then close |
 | Task hangs forever | `app/tasks.py:80` `asyncio.wait_for` | SSE `error` event with `reason=timeout` |
 | LLM unreachable / errors | `app/pipeline.py` raises `SummarizeError` → `ErrorEvent` | SSE `error` event with `reason=summarize` |

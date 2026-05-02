@@ -164,11 +164,18 @@ async def stream_job(session_id: str, request: Request):
             # Phase 2: TAIL — drain the buffered messages + live ones. Dedupe
             # by seq for events that landed in both the list (from LRANGE)
             # and the channel buffer (between SUBSCRIBE and LRANGE).
+            #
+            # Design choice: we deliberately do NOT cancel the worker when the
+            # SSE client disconnects. The whole point of replay-then-tail is
+            # that the work outlives the connection — closing a tab during a
+            # 5-minute job must not kill the job. The user can reconnect to
+            # the same session_id and pick up exactly where they left off.
+            # Explicit cancellation is via DELETE /jobs/{session_id} only.
             while True:
                 if await request.is_disconnected():
-                    # Client gave up — set the cancel flag so the worker exits at the
-                    # next checkpoint. The polite version of pulling the plug.
-                    await redis.set(keys.cancel_flag(session_id), "1", ex=300)
+                    # Just exit the SSE generator. Do NOT set the cancel flag —
+                    # the worker keeps running, and the events list keeps
+                    # accumulating for the next reconnect.
                     return
 
                 timeout = max(0.1, heartbeat_at - loop.time())
