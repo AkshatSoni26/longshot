@@ -1,0 +1,100 @@
+# Dev compose — bind-mounts source + enables --reload for both api and worker.
+# Use:
+#   make dev-up        # boot
+#   make dev-logs      # tail
+#   make dev-down      # stop
+#
+# Edit files in ./app or ./static — uvicorn restarts the API and taskiq restarts
+# the worker automatically. No rebuild needed unless dependencies change (then
+# `docker compose -f docker-compose.dev.yml build`).
+#
+# All env vars used by app/settings.py are forwarded with `${VAR:-default}` so
+# you can override any of them at the shell:
+#   LLM_MODE=lmstudio TASK_HARD_TIMEOUT_SECONDS=300 make dev-up
+
+x-app-env: &app-env
+  REDIS_URL: redis://redis:6379/0
+  LLM_MODE: ${LLM_MODE:-mock}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+  LMSTUDIO_BASE_URL: ${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
+  LMSTUDIO_MODEL: ${LMSTUDIO_MODEL:-}
+  LMSTUDIO_TIMEOUT_SECONDS: ${LMSTUDIO_TIMEOUT_SECONDS:-120}
+  LMSTUDIO_MAX_TOKENS: ${LMSTUDIO_MAX_TOKENS:-2048}
+  LMSTUDIO_TEMPERATURE: ${LMSTUDIO_TEMPERATURE:-0.3}
+  LMSTUDIO_STRIP_THINKING: ${LMSTUDIO_STRIP_THINKING:-true}
+  TASK_HARD_TIMEOUT_SECONDS: ${TASK_HARD_TIMEOUT_SECONDS:-120}
+  IDEMPOTENCY_LOCK_TTL_SECONDS: ${IDEMPOTENCY_LOCK_TTL_SECONDS:-600}
+  RESULT_TTL_SECONDS: ${RESULT_TTL_SECONDS:-3600}
+  PROGRESS_SNAPSHOT_TTL_SECONDS: ${PROGRESS_SNAPSHOT_TTL_SECONDS:-3600}
+  SSE_HEARTBEAT_SECONDS: ${SSE_HEARTBEAT_SECONDS:-30}
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment:
+      <<: *app-env
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Live source — uvicorn --reload watches these.
+      - ./app:/app/app
+      - ./static:/app/static
+      # NOTE: we deliberately do NOT mount pyproject.toml or .venv. Dependency
+      # changes require a rebuild (`docker compose -f docker-compose.dev.yml build`).
+    depends_on:
+      redis:
+        condition: service_healthy
+    command:
+      - uvicorn
+      - app.api:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/app
+      - --reload-dir
+      - /app/static
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    environment:
+      <<: *app-env
+      WORKER_CONSUMER_NAME: ${WORKER_CONSUMER_NAME:-worker-1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./app:/app/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    # taskiq supports --reload (watches files; restarts on change).
+    command:
+      - taskiq
+      - worker
+      - app.worker:broker
+      - app.tasks
+      - --workers
+      - "1"
+      - --reload
+      - --reload-dir
+      - /app/app

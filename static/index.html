@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>longshot — TaskIQ + Redis + SSE demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    /* ---------------------------------------------------------------------
+       Tokens
+       ------------------------------------------------------------------ */
+    :root {
+      --bg: #0b0d12;
+      --bg-side: #0e1117;
+      --bg-card: #141821;
+      --bg-hover: #1a1f2b;
+      --bg-bubble-sys: #161a23;
+      --bg-bubble-asst: #1a2330;
+      --bg-bubble-final: #1d2e2a;
+      --fg: #e8eaf0;
+      --fg-muted: #8a93a6;
+      --fg-dim: #5d6679;
+      --line: #1d2230;
+      --line-strong: #2a2f3d;
+      --accent: #6cb6ff;
+      --accent-soft: #6cb6ff20;
+      --good: #6fcf97;
+      --warn: #f2c94c;
+      --bad: #eb5757;
+      --info: #8b8bff;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font: 14px/1.55 var(--sans);
+      overflow: hidden;
+    }
+    button, input, textarea {
+      font: inherit; color: inherit;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ---------------------------------------------------------------------
+       Layout: sidebar + main
+       ------------------------------------------------------------------ */
+    .app {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      height: 100%;
+    }
+
+    /* === Sidebar ======================================================= */
+    .side {
+      background: var(--bg-side);
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .side-header {
+      padding: 18px 18px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      font-weight: 700; font-size: 16px; letter-spacing: -0.01em;
+    }
+    .brand-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--info));
+      box-shadow: 0 0 12px var(--accent-soft);
+    }
+    .brand-sub {
+      color: var(--fg-muted); font-size: 11px; margin-top: 4px;
+    }
+    .new-job-btn {
+      margin-top: 14px; width: 100%;
+      background: var(--accent); color: #08101c;
+      border: 0; border-radius: var(--radius-sm);
+      padding: 9px 12px; font-weight: 600; cursor: pointer;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .new-job-btn:hover { filter: brightness(1.08); }
+
+    .side-section-title {
+      padding: 14px 18px 8px;
+      font-size: 11px; color: var(--fg-dim);
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .job-list {
+      flex: 1; overflow-y: auto; padding: 0 8px 12px;
+    }
+    .job-item {
+      padding: 9px 10px; border-radius: var(--radius-sm); cursor: pointer;
+      display: flex; align-items: center; gap: 8px;
+      color: var(--fg); transition: background 0.1s;
+      margin-bottom: 2px;
+    }
+    .job-item:hover { background: var(--bg-hover); }
+    .job-item.active { background: var(--accent-soft); }
+    .job-status-dot {
+      width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px;
+      background: var(--fg-dim);
+    }
+    .job-status-dot.running { background: var(--warn); animation: pulse 1.4s infinite; }
+    .job-status-dot.done { background: var(--good); }
+    .job-status-dot.error { background: var(--bad); }
+    .job-status-dot.cancelled { background: var(--fg-dim); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.3); }
+    }
+    .job-item-text {
+      min-width: 0; flex: 1;
+      font-size: 13px;
+    }
+    .job-item-title {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .job-item-time {
+      font-size: 11px; color: var(--fg-dim);
+    }
+    .empty-jobs {
+      color: var(--fg-dim); font-size: 12px;
+      padding: 8px 12px; text-align: center; font-style: italic;
+    }
+
+    .side-footer {
+      border-top: 1px solid var(--line);
+      padding: 12px 18px;
+      font-size: 12px; color: var(--fg-muted);
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .mode-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 9px; border-radius: 999px;
+      background: var(--bg-card); border: 1px solid var(--line-strong);
+      font-family: var(--mono); font-size: 11px;
+      align-self: flex-start;
+    }
+    .mode-badge.mode-mock { color: var(--fg-muted); }
+    .mode-badge.mode-real { color: var(--info); border-color: var(--info); }
+    .mode-badge.mode-lmstudio { color: var(--good); border-color: var(--good); }
+    .health-row { display: flex; justify-content: space-between; }
+    .health-row .ok { color: var(--good); }
+    .health-row .bad { color: var(--bad); }
+
+    /* === Main ========================================================== */
+    .main {
+      display: flex; flex-direction: column;
+      min-width: 0; min-height: 0;
+    }
+    .main-header {
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 14px;
+      flex: 0 0 auto;
+    }
+    .main-title {
+      flex: 1; min-width: 0;
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .main-title-url {
+      font-size: 15px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .main-title-meta {
+      color: var(--fg-muted); font-size: 12px; font-family: var(--mono);
+    }
+    .status-pill {
+      padding: 4px 11px; border-radius: 999px;
+      font-size: 12px; font-weight: 600;
+      background: var(--bg-card); border: 1px solid var(--line-strong);
+      flex: 0 0 auto;
+    }
+    .status-pill.idle      { color: var(--fg-muted); }
+    .status-pill.running   { color: var(--warn); border-color: var(--warn); }
+    .status-pill.done      { color: var(--good); border-color: var(--good); }
+    .status-pill.error     { color: var(--bad); border-color: var(--bad); }
+    .status-pill.cancelled { color: var(--fg-dim); }
+
+    /* progress bar */
+    .progress {
+      flex: 0 0 auto; padding: 0 24px;
+      border-bottom: 1px solid var(--line);
+    }
+    .progress[hidden] { display: none; }
+    .progress-track {
+      height: 3px; background: var(--line); border-radius: 2px;
+      overflow: hidden; margin: 8px 0;
+    }
+    .progress-fill {
+      height: 100%; background: var(--accent);
+      width: 0%; transition: width 0.4s ease;
+    }
+    .progress-label {
+      font-size: 11px; color: var(--fg-muted); padding-bottom: 6px;
+      font-family: var(--mono);
+    }
+
+    /* timeline */
+    .timeline {
+      flex: 1; min-height: 0;
+      overflow-y: auto;
+      padding: 24px 24px 8px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .empty-timeline {
+      flex: 1;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      color: var(--fg-dim);
+      gap: 8px;
+    }
+    .empty-timeline svg { opacity: 0.4; }
+    .empty-timeline-title { font-size: 16px; color: var(--fg-muted); }
+    .empty-timeline-hint { font-size: 13px; }
+
+    /* status row (small system events) */
+    .row-sys {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 12px; color: var(--fg-muted);
+      font-family: var(--mono);
+    }
+    .row-sys-icon {
+      width: 14px; height: 14px; flex: 0 0 14px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .row-sys-icon.spin { animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .row-sys-meta { color: var(--fg-dim); margin-left: auto; }
+    .row-sys.error    { color: var(--bad); }
+    .row-sys.cancelled{ color: var(--warn); }
+
+    /* assistant bubbles (chunk summaries + final) */
+    .row-asst {
+      display: flex; gap: 12px; align-items: flex-start;
+      padding: 4px 0;
+    }
+    .row-asst-avatar {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--info));
+      flex: 0 0 28px;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 12px; color: #08101c;
+    }
+    .bubble {
+      background: var(--bg-bubble-asst);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 11px 14px;
+      flex: 1; min-width: 0;
+    }
+    .bubble.final {
+      background: var(--bg-bubble-final);
+      border-color: var(--good);
+      box-shadow: 0 0 0 3px #6fcf9710;
+    }
+    .bubble-head {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 11px; color: var(--fg-muted);
+      margin-bottom: 6px; font-family: var(--mono);
+    }
+    .bubble-head .badge {
+      background: var(--bg-card); padding: 2px 8px; border-radius: 999px;
+      border: 1px solid var(--line-strong);
+    }
+    .bubble.final .bubble-head .badge {
+      color: var(--good); border-color: var(--good);
+    }
+    .bubble-body {
+      font-size: 14px; line-height: 1.6;
+      white-space: pre-wrap; word-wrap: break-word;
+    }
+
+    /* user-input bubble (chat mode) */
+    .row-user {
+      display: flex; justify-content: flex-end;
+    }
+    .row-user .bubble {
+      max-width: 80%;
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      flex: 0 1 auto;
+    }
+
+    /* streaming cursor — blinks at the end of a live bubble */
+    .stream-cursor {
+      display: inline-block;
+      width: 7px; height: 14px;
+      background: var(--accent);
+      vertical-align: text-bottom;
+      margin-left: 2px;
+      animation: blink 1s steps(1) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* "thinking" / awaiting next chunk */
+    .typing {
+      display: inline-flex; gap: 3px; padding: 0 4px;
+    }
+    .typing span {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: var(--fg-muted);
+      animation: bounce 1.2s infinite;
+    }
+    .typing span:nth-child(2) { animation-delay: 0.18s; }
+    .typing span:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes bounce {
+      0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+      30%          { transform: translateY(-3px); opacity: 1; }
+    }
+
+    /* composer */
+    .composer {
+      flex: 0 0 auto;
+      border-top: 1px solid var(--line);
+      padding: 14px 24px;
+      background: var(--bg);
+    }
+    .composer-row {
+      display: flex; gap: 10px; align-items: stretch;
+    }
+    .composer input.url {
+      flex: 1;
+      background: var(--bg-card);
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      font-size: 14px;
+      transition: border-color 0.15s;
+    }
+    .composer input.url:focus {
+      outline: none; border-color: var(--accent);
+    }
+    .composer input.url:disabled {
+      opacity: 0.6; cursor: not-allowed;
+    }
+    .composer-btn {
+      padding: 0 18px;
+      background: var(--accent); color: #08101c;
+      border: 0; border-radius: var(--radius);
+      font-weight: 600; cursor: pointer;
+      display: flex; align-items: center; gap: 6px;
+      transition: background 0.15s;
+    }
+    .composer-btn:hover { filter: brightness(1.08); }
+    .composer-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .composer-btn.cancel {
+      background: var(--bad); color: #fff;
+    }
+
+    /* error banner */
+    .error-banner {
+      background: #3a1a1f;
+      border: 1px solid var(--bad);
+      color: #fcb1b1;
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      margin: 10px 24px 0;
+      font-size: 13px;
+    }
+
+    /* scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--fg-dim); }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <!-- ============== SIDEBAR ============== -->
+    <aside class="side">
+      <div class="side-header">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <span>longshot</span>
+        </div>
+        <div class="brand-sub">TaskIQ · Redis · SSE</div>
+        <button class="new-job-btn" id="new-job">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          New job
+        </button>
+      </div>
+      <div class="side-section-title">Recent jobs</div>
+      <div class="job-list" id="job-list"></div>
+      <div class="side-footer">
+        <div class="health-row">
+          <span>Mode</span>
+          <span class="mode-badge" id="mode-badge">…</span>
+        </div>
+        <div class="health-row">
+          <span>Redis</span>
+          <span id="health-redis" class="bad">offline</span>
+        </div>
+        <div class="health-row">
+          <span>Worker</span>
+          <span id="health-worker" class="bad">offline</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ============== MAIN ============== -->
+    <main class="main">
+      <header class="main-header">
+        <div class="main-title">
+          <div class="main-title-url" id="title-url">No active job</div>
+          <div class="main-title-meta" id="title-meta">Type a question or paste a URL to start.</div>
+        </div>
+        <div class="status-pill idle" id="status-pill">idle</div>
+      </header>
+
+      <div class="progress" id="progress" hidden>
+        <div class="progress-label" id="progress-label">0 / 0 chunks</div>
+        <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+      </div>
+
+      <div id="error-banner"></div>
+
+      <div class="timeline" id="timeline">
+        <div class="empty-timeline" id="empty-timeline">
+          <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+          </svg>
+          <div class="empty-timeline-title">Ask anything, or paste a URL</div>
+          <div class="empty-timeline-hint">Plain text streams an LLM answer. URLs get fetched, chunked, and summarized.</div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <form class="composer-row" id="composer-form">
+          <input
+            type="text" id="url" class="url"
+            placeholder="Ask something, or paste a URL to summarize…"
+            autocomplete="off" />
+          <button type="submit" class="composer-btn" id="submit-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+            Send
+          </button>
+        </form>
+      </div>
+    </main>
+  </div>
+
+  <script>
+  /* ===========================================================================
+     Defaults — params are intentionally not exposed in the UI to keep the
+     composer clean. Tweak here, or override via the JSON API directly:
+       curl -X POST /jobs -d '{"url":"...","chunk_size_chars":2000,"max_chunks":5}'
+     ======================================================================== */
+  const DEFAULT_CHUNK_SIZE_CHARS = 1500;
+  const DEFAULT_MAX_CHUNKS = 3;
+
+  /* ===========================================================================
+     Tiny helpers
+     ======================================================================== */
+  const $ = (id) => document.getElementById(id);
+  const fmtTime = (ts) => {
+    const d = new Date(ts * 1000);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    return sameDay
+      ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+  const shortUrl = (u) => {
+    try {
+      const x = new URL(u);
+      return x.hostname.replace(/^www\./, '') + (x.pathname === '/' ? '' : x.pathname);
+    } catch { return u; }
+  };
+
+  /* ===========================================================================
+     localStorage-backed job history
+     ======================================================================== */
+  const HISTORY_KEY = 'longshot.history.v1';
+  const loadHistory = () => {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
+    catch { return []; }
+  };
+  const saveHistory = (list) => {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, 50)));
+  };
+  const upsertHistory = (entry) => {
+    const list = loadHistory().filter((j) => j.session_id !== entry.session_id);
+    list.unshift(entry);
+    saveHistory(list);
+    renderHistory();
+  };
+  const updateHistoryStatus = (session_id, status) => {
+    const list = loadHistory();
+    const j = list.find((x) => x.session_id === session_id);
+    if (!j) return;
+    j.status = status;
+    saveHistory(list);
+    renderHistory();
+  };
+
+  function renderHistory() {
+    const list = loadHistory();
+    const target = $('job-list');
+    if (!list.length) {
+      target.innerHTML = '<div class="empty-jobs">No jobs yet.</div>';
+      return;
+    }
+    target.innerHTML = list.map((j) => `
+      <div class="job-item ${j.session_id === state.activeSession ? 'active' : ''}" data-sid="${j.session_id}">
+        <span class="job-status-dot ${j.status || 'idle'}"></span>
+        <div class="job-item-text">
+          <div class="job-item-title">${escapeHtml(shortUrl(j.url))}</div>
+          <div class="job-item-time">${fmtTime(j.created_at)}</div>
+        </div>
+      </div>
+    `).join('');
+    [...target.querySelectorAll('.job-item')].forEach((el) => {
+      el.addEventListener('click', () => loadSession(el.dataset.sid));
+    });
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  /* ===========================================================================
+     UI state
+     ======================================================================== */
+  const state = {
+    activeSession: null,
+    activeMode: null,            // 'url' | 'chat'
+    activeInput: null,
+    activeMaxChunks: null,
+    chunksDone: 0,
+    es: null,
+    typingNode: null,
+    streamBubble: null,          // currently streaming bubble (token deltas append here)
+    streamBody: null,            // .bubble-body inside streamBubble
+    streamCursor: null,          // blinking cursor span at the end
+    streamText: '',              // accumulated text — for safe re-render on done
+  };
+
+  function setStatus(label, kind) {
+    const pill = $('status-pill');
+    pill.textContent = label;
+    pill.className = `status-pill ${kind}`;
+  }
+
+  function setComposer({ disabled, cancel }) {
+    $('url').disabled = disabled;
+    const btn = $('submit-btn');
+    if (cancel) {
+      btn.classList.add('cancel');
+      btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Cancel`;
+      btn.disabled = false;
+      btn.dataset.action = 'cancel';
+    } else {
+      btn.classList.remove('cancel');
+      btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>Summarize`;
+      btn.disabled = !!disabled;
+      btn.dataset.action = 'submit';
+    }
+  }
+
+  function showProgress(total) {
+    $('progress').hidden = false;
+    $('progress-label').textContent = `0 / ${total} chunks`;
+    $('progress-fill').style.width = '0%';
+  }
+  function updateProgress(done, total) {
+    $('progress-label').textContent = `${done} / ${total} chunks`;
+    $('progress-fill').style.width = total ? `${(done / total) * 100}%` : '0%';
+  }
+  function hideProgress() { $('progress').hidden = true; }
+
+  function showError(msg) {
+    const el = $('error-banner');
+    el.innerHTML = `<div class="error-banner">${escapeHtml(msg)}</div>`;
+  }
+  function clearError() { $('error-banner').innerHTML = ''; }
+
+  function clearTimeline() {
+    $('timeline').innerHTML = '';
+    state.typingNode = null;
+  }
+  function ensureTimelineRoot() {
+    const empty = $('empty-timeline');
+    if (empty) empty.remove();
+  }
+  function appendNode(node) {
+    ensureTimelineRoot();
+    $('timeline').appendChild(node);
+    requestAnimationFrame(() => {
+      $('timeline').scrollTop = $('timeline').scrollHeight;
+    });
+  }
+
+  function renderSysRow({ icon, label, time, kind }) {
+    const div = document.createElement('div');
+    div.className = `row-sys ${kind || ''}`;
+    div.innerHTML = `
+      <span class="row-sys-icon ${kind === 'running' ? 'spin' : ''}">${icon}</span>
+      <span>${escapeHtml(label)}</span>
+      <span class="row-sys-meta">${time ? fmtTime(time) : ''}</span>`;
+    appendNode(div);
+    return div;
+  }
+
+  function renderAsstBubble({ tag, body, time, final }) {
+    const div = document.createElement('div');
+    div.className = 'row-asst';
+    div.innerHTML = `
+      <div class="row-asst-avatar">L</div>
+      <div class="bubble ${final ? 'final' : ''}">
+        <div class="bubble-head">
+          <span class="badge">${escapeHtml(tag)}</span>
+          <span>${time ? fmtTime(time) : ''}</span>
+        </div>
+        <div class="bubble-body">${escapeHtml(body)}</div>
+      </div>`;
+    appendNode(div);
+    return div;
+  }
+
+  function renderUserBubble(text) {
+    const div = document.createElement('div');
+    div.className = 'row-user';
+    div.innerHTML = `<div class="bubble"><div class="bubble-body">${escapeHtml(text)}</div></div>`;
+    appendNode(div);
+  }
+
+  /* Open a streaming bubble. Tokens append to .bubble-body; closeStreamBubble
+     stops the cursor and freezes the content. */
+  function openStreamBubble({ tag, time, final }) {
+    closeStreamBubble();  // safety: only one open at a time
+    const div = document.createElement('div');
+    div.className = 'row-asst';
+    div.innerHTML = `
+      <div class="row-asst-avatar">L</div>
+      <div class="bubble ${final ? 'final' : ''}">
+        <div class="bubble-head">
+          <span class="badge">${escapeHtml(tag)}</span>
+          <span>${time ? fmtTime(time) : ''}</span>
+        </div>
+        <div class="bubble-body"></div>
+      </div>`;
+    appendNode(div);
+    state.streamBubble = div;
+    state.streamBody = div.querySelector('.bubble-body');
+    state.streamText = '';
+    const cursor = document.createElement('span');
+    cursor.className = 'stream-cursor';
+    state.streamBody.appendChild(cursor);
+    state.streamCursor = cursor;
+    return div;
+  }
+
+  function appendStreamDelta(delta) {
+    if (!state.streamBody) return;
+    state.streamText += delta;
+    // Insert text *before* the cursor so the cursor stays at the end.
+    const text = document.createTextNode(delta);
+    state.streamBody.insertBefore(text, state.streamCursor);
+    // Throttled scroll-to-bottom — only when user is already near bottom.
+    const tl = $('timeline');
+    const nearBottom = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 200;
+    if (nearBottom) tl.scrollTop = tl.scrollHeight;
+  }
+
+  function promoteStreamToFinal() {
+    if (!state.streamBubble) return;
+    const bubble = state.streamBubble.querySelector('.bubble');
+    bubble.classList.add('final');
+    const badge = bubble.querySelector('.badge');
+    if (badge) badge.textContent = 'final answer';
+  }
+
+  function closeStreamBubble() {
+    if (state.streamCursor) {
+      state.streamCursor.remove();
+      state.streamCursor = null;
+    }
+    state.streamBubble = null;
+    state.streamBody = null;
+  }
+
+  function showTyping(label) {
+    if (state.typingNode) return;
+    const div = document.createElement('div');
+    div.className = 'row-sys';
+    div.innerHTML = `
+      <span class="row-sys-icon"><span class="typing"><span></span><span></span><span></span></span></span>
+      <span>${escapeHtml(label)}</span>`;
+    appendNode(div);
+    state.typingNode = div;
+  }
+  function hideTyping() {
+    if (state.typingNode) state.typingNode.remove();
+    state.typingNode = null;
+  }
+
+  /* ===========================================================================
+     Icons (inline so we don't depend on a font)
+     ======================================================================== */
+  const ICONS = {
+    play:    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+    fetch:   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+    check:   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>',
+    refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+    error:   '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+    cancel:  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+    sparkle: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="12 2 15 9 22 12 15 15 12 22 9 15 2 12 9 9 12 2"/></svg>',
+  };
+
+  /* ===========================================================================
+     Event handling — typed-discriminated-union events from SSE
+     ======================================================================== */
+  function handleEvent(ev) {
+    switch (ev.type) {
+      case 'started':
+        setStatus('running', 'running');
+        // In URL mode the input is a URL — show it as a status row. In chat
+        // mode we already rendered the user bubble on submit, so skip.
+        if (state.activeMode === 'url') {
+          renderSysRow({
+            icon: ICONS.play,
+            label: `Started: ${ev.input}`,
+            time: ev.ts,
+            kind: 'running',
+          });
+        }
+        break;
+
+      case 'fetch_started':
+        renderSysRow({ icon: ICONS.fetch, label: 'Fetching content…', time: ev.ts, kind: 'running' });
+        break;
+
+      case 'fetch_done':
+        renderSysRow({ icon: ICONS.check, label: `Fetched ${ev.chars.toLocaleString()} chars`, time: ev.ts });
+        showProgress(state.activeMaxChunks || 1);
+        showTyping('summarizing chunk 1…');
+        break;
+
+      case 'chunk_summarized':
+        hideTyping();
+        renderAsstBubble({
+          tag: `chunk ${ev.index + 1} / ${ev.total}`,
+          body: ev.summary,
+          time: ev.ts,
+        });
+        state.chunksDone = ev.index + 1;
+        updateProgress(state.chunksDone, ev.total);
+        if (ev.index + 1 < ev.total) {
+          showTyping(`summarizing chunk ${ev.index + 2}…`);
+        }
+        break;
+
+      case 'final_started':
+        renderSysRow({ icon: ICONS.sparkle, label: 'Synthesizing…', time: ev.ts, kind: 'running' });
+        break;
+
+      case 'answer_started':
+        // Open a streaming bubble. Tokens will append. In chat mode this is
+        // the answer; in URL mode this is the synthesis.
+        hideTyping();
+        openStreamBubble({
+          tag: state.activeMode === 'url' ? 'final synthesis' : 'answer',
+          time: ev.ts,
+          final: true,
+        });
+        break;
+
+      case 'token':
+        appendStreamDelta(ev.delta);
+        break;
+
+      case 'answer_done':
+        // Stop the cursor but keep the bubble.
+        if (state.streamCursor) {
+          state.streamCursor.remove();
+          state.streamCursor = null;
+        }
+        break;
+
+      case 'final_done':
+        renderSysRow({ icon: ICONS.check, label: `Synthesis complete (${ev.length} chars)`, time: ev.ts });
+        break;
+
+      case 'done':
+        hideTyping();
+        // If we have a streaming bubble (we should), promote it as the final.
+        // If not (older session, no streaming events), drop a plain final bubble.
+        if (state.streamBubble) {
+          promoteStreamToFinal();
+          closeStreamBubble();
+        } else {
+          renderAsstBubble({
+            tag: 'final answer',
+            body: ev.summary,
+            time: ev.ts,
+            final: true,
+          });
+        }
+        setStatus('done', 'done');
+        updateHistoryStatus(ev.session_id, 'done');
+        setComposer({ disabled: false, cancel: false });
+        break;
+
+      case 'error':
+        hideTyping();
+        closeStreamBubble();
+        renderSysRow({
+          icon: ICONS.error,
+          label: `Error (${ev.reason || 'unknown'}): ${ev.message || ''}`,
+          time: ev.ts,
+          kind: 'error',
+        });
+        setStatus('error', 'error');
+        updateHistoryStatus(ev.session_id, 'error');
+        setComposer({ disabled: false, cancel: false });
+        break;
+
+      case 'cancelled':
+        hideTyping();
+        closeStreamBubble();
+        renderSysRow({
+          icon: ICONS.cancel,
+          label: `Cancelled by ${ev.by || 'client'}`,
+          time: ev.ts,
+          kind: 'cancelled',
+        });
+        setStatus('cancelled', 'cancelled');
+        updateHistoryStatus(ev.session_id, 'cancelled');
+        setComposer({ disabled: false, cancel: false });
+        break;
+
+      default:
+        // queued / heartbeat / keepalive — nothing to render
+        break;
+    }
+  }
+
+  /* ===========================================================================
+     SSE lifecycle
+     ======================================================================== */
+  function attachSSE(streamUrl) {
+    if (state.es) { state.es.close(); state.es = null; }
+
+    const es = new EventSource(streamUrl);
+    state.es = es;
+    const named = [
+      'queued','started','fetch_started','fetch_done','chunk_summarized',
+      'final_started','final_done','answer_started','token','answer_done',
+      'heartbeat','cancelled','error','done',
+    ];
+    for (const name of named) {
+      es.addEventListener(name, (e) => {
+        try {
+          const ev = JSON.parse(e.data);
+          handleEvent(ev);
+          if (['done','error','cancelled'].includes(name)) {
+            es.close();
+            state.es = null;
+          }
+        } catch (err) {
+          showError(`Failed to parse event: ${err.message}`);
+        }
+      });
+    }
+    es.addEventListener('keepalive', () => { /* visible only as a tiny ping in network tab */ });
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) state.es = null;
+    };
+  }
+
+  /* ===========================================================================
+     Submit / cancel
+     ======================================================================== */
+  async function submit(e) {
+    e?.preventDefault();
+    if ($('submit-btn').dataset.action === 'cancel') return cancel();
+
+    clearError();
+    const input = $('url').value.trim();
+    const chunk_size_chars = DEFAULT_CHUNK_SIZE_CHARS;
+    const max_chunks = DEFAULT_MAX_CHUNKS;
+    if (!input) return;
+
+    setStatus('queueing', 'running');
+    setComposer({ disabled: true, cancel: false });
+
+    let res;
+    try {
+      res = await fetch('/jobs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ input, chunk_size_chars, max_chunks }),
+      });
+    } catch (err) {
+      showError(`Network error: ${err.message}`);
+      setStatus('error', 'error');
+      setComposer({ disabled: false, cancel: false });
+      return;
+    }
+    if (!res.ok) {
+      let detail = await res.text();
+      try { detail = JSON.parse(detail).detail || detail; } catch {}
+      showError(`HTTP ${res.status}: ${detail}`);
+      setStatus('error', 'error');
+      setComposer({ disabled: false, cancel: false });
+      return;
+    }
+    const j = await res.json();
+    state.activeSession = j.session_id;
+    state.activeMode = j.mode;
+    state.activeInput = input;
+    state.activeMaxChunks = max_chunks;
+    state.chunksDone = 0;
+    clearTimeline();
+
+    // Header line: show input in URL mode (it's a URL); for chat mode the
+    // user bubble already shows the question — just label it as a chat session.
+    if (j.mode === 'url') {
+      $('title-url').textContent = input;
+      $('title-meta').textContent =
+        `URL summarize · session_id=${j.session_id} · max_chunks=${max_chunks}`;
+    } else {
+      $('title-url').textContent = 'Chat';
+      $('title-meta').textContent = `chat session · session_id=${j.session_id}`;
+      // Drop a user-message bubble at the top of the timeline.
+      renderUserBubble(input);
+    }
+
+    setStatus('running', 'running');
+    setComposer({ disabled: true, cancel: true });
+    // Clear the input only in chat mode — URL mode users may want to refine
+    // and resubmit the same URL.
+    if (j.mode === 'chat') $('url').value = '';
+
+    upsertHistory({
+      session_id: j.session_id,
+      mode: j.mode,
+      url: input,                   // legacy field name in localStorage for back-compat
+      input,
+      created_at: Date.now() / 1000,
+      max_chunks,
+      chunk_size_chars,
+      status: 'running',
+    });
+
+    attachSSE(j.stream_url);
+  }
+
+  async function cancel() {
+    if (!state.activeSession) return;
+    try {
+      await fetch(`/jobs/${state.activeSession}`, { method: 'DELETE' });
+    } catch (err) {
+      showError(`Cancel failed: ${err.message}`);
+    }
+    // The 'cancelled' event from SSE will reset the composer.
+  }
+
+  /* ===========================================================================
+     Replay an existing session (clicked from the sidebar)
+     ======================================================================== */
+  async function loadSession(sid) {
+    if (state.es) { state.es.close(); state.es = null; }
+    closeStreamBubble();
+    const entry = loadHistory().find((j) => j.session_id === sid);
+    if (!entry) return;
+
+    const mode = entry.mode || 'url';
+    const inputText = entry.input || entry.url;
+
+    state.activeSession = sid;
+    state.activeMode = mode;
+    state.activeInput = inputText;
+    state.activeMaxChunks = entry.max_chunks || 1;
+    state.chunksDone = 0;
+
+    clearError();
+    clearTimeline();
+
+    if (mode === 'url') {
+      $('title-url').textContent = inputText;
+      $('title-meta').textContent = `URL summarize · session_id=${sid} (replay)`;
+    } else {
+      $('title-url').textContent = 'Chat';
+      $('title-meta').textContent = `chat session · session_id=${sid} (replay)`;
+      renderUserBubble(inputText);
+    }
+    setStatus(entry.status || 'idle', entry.status || 'idle');
+    setComposer({ disabled: false, cancel: false });
+
+    renderHistory(); // refresh active highlight
+
+    // Reattach the SSE — the API replays from the events list, then tails live.
+    attachSSE(`/jobs/${sid}/stream`);
+  }
+
+  function newJob() {
+    if (state.es) { state.es.close(); state.es = null; }
+    closeStreamBubble();
+    state.activeSession = null;
+    state.activeMode = null;
+    state.activeInput = null;
+    clearTimeline();
+    clearError();
+    hideProgress();
+    $('title-url').textContent = 'No active job';
+    $('title-meta').textContent = 'Type a question or paste a URL to start.';
+    $('timeline').innerHTML = `
+      <div class="empty-timeline">
+        <svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <div class="empty-timeline-title">Ask anything, or paste a URL</div>
+        <div class="empty-timeline-hint">Plain text streams an LLM answer. URLs get fetched, chunked, and summarized.</div>
+      </div>`;
+    setStatus('idle', 'idle');
+    setComposer({ disabled: false, cancel: false });
+    renderHistory();
+    $('url').focus();
+  }
+
+  /* ===========================================================================
+     /health polling — keeps the sidebar status fresh
+     ======================================================================== */
+  async function pollHealth() {
+    try {
+      const r = await fetch('/health');
+      if (!r.ok) throw new Error(r.statusText);
+      const h = await r.json();
+      $('mode-badge').textContent = h.llm_mode;
+      $('mode-badge').className = `mode-badge mode-${h.llm_mode}`;
+      $('health-redis').textContent = h.redis ? 'online' : 'offline';
+      $('health-redis').className = h.redis ? 'ok' : 'bad';
+      $('health-worker').textContent = h.worker_alive ? 'online' : 'offline';
+      $('health-worker').className = h.worker_alive ? 'ok' : 'bad';
+    } catch {
+      $('health-redis').textContent = 'offline';
+      $('health-redis').className = 'bad';
+      $('health-worker').textContent = 'offline';
+      $('health-worker').className = 'bad';
+    }
+  }
+
+  /* ===========================================================================
+     Wire it up
+     ======================================================================== */
+  document.addEventListener('DOMContentLoaded', () => {
+    $('composer-form').addEventListener('submit', submit);
+    $('new-job').addEventListener('click', newJob);
+    renderHistory();
+    pollHealth();
+    setInterval(pollHealth, 8000);
+    $('url').focus();
+  });
+  </script>
+</body>
+</html>

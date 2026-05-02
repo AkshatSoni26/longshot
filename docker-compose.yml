@@ -1,0 +1,69 @@
+# Three services, one shared Redis. The whole point of the demo: api and worker
+# never import each other; they only meet in Redis.
+#
+# LM Studio note: when LLM_MODE=lmstudio, the worker reaches LM Studio on the
+# host via `host.docker.internal:1234`. The `extra_hosts` block makes that name
+# resolve on Linux too (it's automatic on Docker Desktop / macOS / Windows).
+#
+# All env vars used by app/settings.py are forwarded with `${VAR:-default}` so
+# you can override any of them at the shell:
+#   LLM_MODE=lmstudio TASK_HARD_TIMEOUT_SECONDS=300 docker compose up -d
+#
+# YAML anchors below de-duplicate the long env block.
+
+x-app-env: &app-env
+  REDIS_URL: redis://redis:6379/0
+  # LLM
+  LLM_MODE: ${LLM_MODE:-mock}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+  # LM Studio
+  LMSTUDIO_BASE_URL: ${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
+  LMSTUDIO_MODEL: ${LMSTUDIO_MODEL:-}
+  LMSTUDIO_TIMEOUT_SECONDS: ${LMSTUDIO_TIMEOUT_SECONDS:-120}
+  LMSTUDIO_MAX_TOKENS: ${LMSTUDIO_MAX_TOKENS:-2048}
+  LMSTUDIO_TEMPERATURE: ${LMSTUDIO_TEMPERATURE:-0.3}
+  LMSTUDIO_STRIP_THINKING: ${LMSTUDIO_STRIP_THINKING:-true}
+  # Timeouts / TTLs
+  TASK_HARD_TIMEOUT_SECONDS: ${TASK_HARD_TIMEOUT_SECONDS:-120}
+  IDEMPOTENCY_LOCK_TTL_SECONDS: ${IDEMPOTENCY_LOCK_TTL_SECONDS:-600}
+  RESULT_TTL_SECONDS: ${RESULT_TTL_SECONDS:-3600}
+  PROGRESS_SNAPSHOT_TTL_SECONDS: ${PROGRESS_SNAPSHOT_TTL_SECONDS:-3600}
+  SSE_HEARTBEAT_SECONDS: ${SSE_HEARTBEAT_SECONDS:-30}
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      <<: *app-env
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  worker:
+    build: .
+    environment:
+      <<: *app-env
+      WORKER_CONSUMER_NAME: ${WORKER_CONSUMER_NAME:-worker-1}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: ["taskiq", "worker", "app.worker:broker", "app.tasks", "--workers", "1"]

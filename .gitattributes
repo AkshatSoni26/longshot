@@ -1,0 +1,11 @@
+# Auto-detect text files and normalize line endings on commit.
+* text=auto
+
+# Force LF for files that must run on Linux containers / CI.
+*.sh        text eol=lf
+*.py        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.toml      text eol=lf
+Dockerfile  text eol=lf
+Makefile    text eol=lf
